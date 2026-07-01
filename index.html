@@ -106,7 +106,7 @@
                 const today = new Date();
                 const diffTime = Math.abs(expDate - today);
                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                return diffDays <= 30;
+                return diffDays <= 14;
             });
 
             // บันทึกยาเข้า Database
@@ -240,7 +240,7 @@
                                     </div>
 
                                     <div className={`bg-white p-5 rounded-xl border shadow-sm ${expiringSoon.length > 0 ? 'border-rose-300 bg-rose-50' : 'border-slate-200'}`}>
-                                        <div className="flex items-center gap-3 mb-2"><div className={`${expiringSoon.length > 0 ? 'bg-rose-200 text-rose-700' : 'bg-slate-100 text-slate-400'} p-2 rounded-lg`}><i className="fa-solid fa-triangle-exclamation text-xl"></i></div><p className="text-sm text-slate-600 font-semibold">ใกล้หมดอายุ (ใน 30 วัน)</p></div>
+                                        <div className="flex items-center gap-3 mb-2"><div className={`${expiringSoon.length > 0 ? 'bg-rose-200 text-rose-700' : 'bg-slate-100 text-slate-400'} p-2 rounded-lg`}><i className="fa-solid fa-triangle-exclamation text-xl"></i></div><p className="text-sm text-slate-600 font-semibold">ใกล้หมดอายุ (ใน 14 วัน)</p></div>
                                         <p className={`text-3xl font-bold ${expiringSoon.length > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{expiringSoon.length} <span className="text-sm font-normal">รอบ</span></p>
                                     </div>
                                 </div>
