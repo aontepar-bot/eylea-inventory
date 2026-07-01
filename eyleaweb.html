@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eylea Inventory System</title>
+    
+    <!-- Tailwind CSS สำหรับตกแต่งความสวยงาม -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome สำหรับไอคอน -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Firebase (เวอร์ชันรองรับไฟล์เดียว) -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+    
+    <!-- React และ ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel สำหรับรันคำสั่ง React (JSX) ใน HTML -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50">
+    <!-- จุดที่โปรแกรมจะนำไปแสดงผล -->
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // 1. นำ Config ของคุณมาใส่ให้เรียบร้อย
+        const firebaseConfig = {
+            apiKey: "AIzaSyChZOWPpiOmNfvyWaSsmyDuYnaum7DjYjw",
+            authDomain: "eylea-stock.firebaseapp.com",
+            projectId: "eylea-stock",
+            storageBucket: "eylea-stock.firebasestorage.app",
+            messagingSenderId: "218028877912",
+            appId: "1:218028877912:web:a8697da6916b54d3fe822d",
+            measurementId: "G-17XMXMH75R"
+        };
+
+        // 2. เริ่มต้นเชื่อมต่อ Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        const { useState, useEffect } = React;
+
+        // 3. เริ่มโค้ดแอปพลิเคชัน
+        const EyleaAppRealtime = () => {
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [loading, setLoading] = useState(true);
+            
+            const [inventory, setInventory] = useState([]);
+            const [transactions, setTransactions] = useState([]);
+
+            const [inboundForm, setInboundForm] = useState({ 
+                productionDate: '', expiryDate: '', batchId: '', qtyClaim: '', qtyFree: '' 
+            });
+            const [outboundForm, setOutboundForm] = useState({ 
+                date: '', batchId: '', type: 'claim', qty: '', note: '' 
+            });
+
+            // ดึงข้อมูลแบบ Realtime จาก Database
+            useEffect(() => {
+                // ดึงข้อมูลสต๊อก
+                const unsubscribeInv = db.collection('inventory').onSnapshot(
+                    (snapshot) => {
+                        const invData = snapshot.docs.map(doc => ({
+                            dbId: doc.id,
+                            ...doc.data()
+                        }));
+                        invData.sort((a, b) => new Date(a.productionDate) - new Date(b.productionDate));
+                        setInventory(invData);
+                        setLoading(false);
+                    },
+                    (error) => { console.error("Error fetching inventory:", error); setLoading(false); }
+                );
+
+                // ดึงข้อมูลประวัติการตัดจ่าย
+                const unsubscribeTx = db.collection('transactions').onSnapshot(
+                    (snapshot) => {
+                        const txData = snapshot.docs.map(doc => ({
+                            dbId: doc.id,
+                            ...doc.data()
+                        }));
+                        txData.sort((a, b) => new Date(b.date) - new Date(a.date));
+                        setTransactions(txData);
+                    },
+                    (error) => { console.error("Error fetching transactions:", error); }
+                );
+
+                return () => {
+                    unsubscribeInv();
+                    unsubscribeTx();
+                };
+            }, []);
+
+            // การคำนวณข้อมูลหน้าแดชบอร์ด
+            const totalAvailableClaim = inventory.reduce((sum, item) => sum + item.currentClaim, 0);
+            const totalAvailableFree = inventory.reduce((sum, item) => sum + item.currentFree, 0);
+            const totalDispensedClaim = transactions.filter(t => t.type === 'claim').reduce((sum, item) => sum + item.qty, 0);
+            const totalDispensedFree = transactions.filter(t => t.type === 'free').reduce((sum, item) => sum + item.qty, 0);
+            
+            const expiringSoon = inventory.filter(item => {
+                if (item.currentClaim === 0 && item.currentFree === 0) return false;
+                const expDate = new Date(item.expiryDate);
+                const today = new Date();
+                const diffTime = Math.abs(expDate - today);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                return diffDays <= 30;
+            });
+
+            // บันทึกยาเข้า Database
+            const handleAddStock = async (e) => {
+                e.preventDefault();
+                const claim = parseInt(inboundForm.qtyClaim) || 0;
+                const free = parseInt(inboundForm.qtyFree) || 0;
+
+                if (!inboundForm.productionDate || !inboundForm.expiryDate || !inboundForm.batchId) return;
+                if (claim === 0 && free === 0) return alert('กรุณาระบุจำนวนยาอย่างน้อย 1 ประเภท');
+
+                const newItem = {
+                    batchId: inboundForm.batchId,
+                    productionDate: inboundForm.productionDate,
+                    expiryDate: inboundForm.expiryDate,
+                    initialClaim: claim,
+                    currentClaim: claim,
+                    initialFree: free,
+                    currentFree: free,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+
+                try {
+                    await db.collection('inventory').add(newItem);
+                    setInboundForm({ productionDate: '', expiryDate: '', batchId: '', qtyClaim: '', qtyFree: '' });
+                    setActiveTab('dashboard');
+                } catch (error) {
+                    alert("เกิดข้อผิดพลาดในการบันทึกข้อมูล: " + error.message);
+                }
+            };
+
+            // บันทึกการตัดจ่ายลง Database
+            const handleDispense = async (e) => {
+                e.preventDefault();
+                if (!outboundForm.date || !outboundForm.batchId || !outboundForm.qty) return;
+
+                const qtyToDispense = parseInt(outboundForm.qty);
+                const selectedItem = inventory.find(item => item.batchId === outboundForm.batchId);
+                
+                if (!selectedItem) return;
+
+                const availableQty = outboundForm.type === 'claim' ? selectedItem.currentClaim : selectedItem.currentFree;
+                if (availableQty < qtyToDispense) {
+                    return alert(`มีไม่เพียงพอ (เหลือ ${availableQty} Syringe)`);
+                }
+
+                try {
+                    const itemRef = db.collection('inventory').doc(selectedItem.dbId);
+                    if (outboundForm.type === 'claim') {
+                        await itemRef.update({ currentClaim: selectedItem.currentClaim - qtyToDispense });
+                    } else {
+                        await itemRef.update({ currentFree: selectedItem.currentFree - qtyToDispense });
+                    }
+
+                    const newTx = {
+                        date: outboundForm.date,
+                        batchId: outboundForm.batchId,
+                        type: outboundForm.type,
+                        qty: qtyToDispense,
+                        note: outboundForm.note,
+                        timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                    };
+                    await db.collection('transactions').add(newTx);
+
+                    setOutboundForm({ date: '', batchId: '', type: 'claim', qty: '', note: '' });
+                    setActiveTab('dashboard');
+                } catch (error) {
+                    alert("เกิดข้อผิดพลาดในการตัดจ่าย: " + error.message);
+                }
+            };
+
+            if (loading) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 flex-col gap-3">
+                        <i className="fa-solid fa-spinner fa-spin text-4xl"></i>
+                        <p>กำลังเชื่อมต่อฐานข้อมูล Eylea...</p>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen font-sans text-slate-800 pb-12">
+                    <nav className="bg-slate-900 text-white p-4 shadow-md sticky top-0 z-10">
+                        <div className="max-w-6xl mx-auto flex flex-col lg:flex-row justify-between items-center gap-4">
+                            <div className="flex items-center gap-3 text-xl font-bold">
+                                <i className="fa-solid fa-syringe text-teal-400 text-2xl"></i>
+                                <span className="tracking-wide">Eylea (Aflibercept) Inventory</span>
+                                <span className="text-[10px] bg-green-500 text-slate-900 px-2 py-0.5 rounded-full font-bold uppercase ml-2 animate-pulse">Real-time</span>
+                            </div>
+                            <div className="flex gap-1 sm:gap-2 overflow-x-auto w-full lg:w-auto pb-2 lg:pb-0">
+                                <button onClick={() => setActiveTab('dashboard')} className={`flex items-center gap-2 px-4 py-2 rounded-lg whitespace-nowrap transition-colors ${activeTab === 'dashboard' ? 'bg-slate-700 shadow-inner' : 'hover:bg-slate-800'}`}>
+                                    <i className="fa-solid fa-table-columns"></i> คลัง
+                                </button>
+                                <button onClick={() => setActiveTab('inbound')} className={`flex items-center gap-2 px-4 py-2 rounded-lg whitespace-nowrap transition-colors ${activeTab === 'inbound' ? 'bg-slate-700 shadow-inner' : 'hover:bg-slate-800'}`}>
+                                    <i className="fa-solid fa-circle-plus"></i> เพิ่มรอบผลิต
+                                </button>
+                                <button onClick={() => setActiveTab('outbound')} className={`flex items-center gap-2 px-4 py-2 rounded-lg whitespace-nowrap transition-colors ${activeTab === 'outbound' ? 'bg-slate-700 shadow-inner' : 'hover:bg-slate-800'}`}>
+                                    <i className="fa-solid fa-circle-minus"></i> ตัดจ่ายยา
+                                </button>
+                                <button onClick={() => setActiveTab('history')} className={`flex items-center gap-2 px-4 py-2 rounded-lg whitespace-nowrap transition-colors ${activeTab === 'history' ? 'bg-slate-700 shadow-inner' : 'hover:bg-slate-800'}`}>
+                                    <i className="fa-solid fa-clipboard-list"></i> ประวัติ
+                                </button>
+                            </div>
+                        </div>
+                    </nav>
+
+                    <main className="max-w-6xl mx-auto p-4 sm:p-6">
+                        
+                        {/* TAB: DASHBOARD */}
+                        {activeTab === 'dashboard' && (
+                            <div className="space-y-6">
+                                <h2 className="text-2xl font-bold text-slate-800 mb-2">คลังยา Eylea (Aflibercept)</h2>
+                                
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                    <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm border-l-4 border-l-sky-500">
+                                        <div className="flex items-center gap-3 mb-2"><div className="bg-sky-50 p-2 rounded-lg text-sky-600"><i className="fa-solid fa-box text-xl"></i></div><p className="text-sm text-slate-500 font-semibold">คงเหลือ (สิทธิ์เบิกคลัง)</p></div>
+                                        <p className="text-3xl font-bold text-sky-700">{totalAvailableClaim} <span className="text-sm font-normal text-slate-500">Syringe</span></p>
+                                    </div>
+
+                                    <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm border-l-4 border-l-emerald-500">
+                                        <div className="flex items-center gap-3 mb-2"><div className="bg-emerald-50 p-2 rounded-lg text-emerald-600"><i className="fa-solid fa-gift text-xl"></i></div><p className="text-sm text-slate-500 font-semibold">คงเหลือ (ฟรี)</p></div>
+                                        <p className="text-3xl font-bold text-emerald-700">{totalAvailableFree} <span className="text-sm font-normal text-slate-500">Syringe</span></p>
+                                    </div>
+
+                                    <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                                        <div className="flex items-center gap-3 mb-2"><div className="bg-slate-100 p-2 rounded-lg text-slate-600"><i className="fa-regular fa-circle-check text-xl"></i></div><p className="text-sm text-slate-500 font-semibold">ตัดจ่ายแล้วสะสม</p></div>
+                                        <div className="flex justify-between items-end">
+                                            <p className="text-2xl font-bold text-slate-700">{totalDispensedClaim + totalDispensedFree}</p>
+                                            <div className="text-xs text-slate-500 text-right">เบิกคลัง: {totalDispensedClaim} <br/> ฟรี: {totalDispensedFree}</div>
+                                        </div>
+                                    </div>
+
+                                    <div className={`bg-white p-5 rounded-xl border shadow-sm ${expiringSoon.length > 0 ? 'border-rose-300 bg-rose-50' : 'border-slate-200'}`}>
+                                        <div className="flex items-center gap-3 mb-2"><div className={`${expiringSoon.length > 0 ? 'bg-rose-200 text-rose-700' : 'bg-slate-100 text-slate-400'} p-2 rounded-lg`}><i className="fa-solid fa-triangle-exclamation text-xl"></i></div><p className="text-sm text-slate-600 font-semibold">ใกล้หมดอายุ (ใน 30 วัน)</p></div>
+                                        <p className={`text-3xl font-bold ${expiringSoon.length > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{expiringSoon.length} <span className="text-sm font-normal">รอบ</span></p>
+                                    </div>
+                                </div>
+
+                                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                    <div className="p-5 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
+                                        <h3 className="text-lg font-bold text-slate-700 flex items-center gap-2"><i className="fa-regular fa-calendar text-xl"></i> ข้อมูลแต่ละรอบการผลิต</h3>
+                                    </div>
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left text-sm text-slate-600">
+                                            <thead className="bg-slate-50 text-slate-600 uppercase border-b border-slate-200">
+                                                <tr>
+                                                    <th className="px-4 py-4 font-medium tracking-wide">Batch</th>
+                                                    <th className="px-4 py-4 font-medium tracking-wide">วันที่ผลิต</th>
+                                                    <th className="px-4 py-4 font-medium tracking-wide">วันหมดอายุ</th>
+                                                    <th className="px-4 py-4 font-medium text-center border-l border-slate-200 bg-sky-50/30">ผลิตได้<br/><span className="text-xs font-normal text-slate-400">(เบิกคลัง)</span></th>
+                                                    <th className="px-4 py-4 font-medium text-center bg-sky-50/30">คงเหลือ<br/><span className="text-xs font-normal text-slate-400">(เบิกคลัง)</span></th>
+                                                    <th className="px-4 py-4 font-medium text-center border-l border-slate-200 bg-emerald-50/30">ผลิตได้<br/><span className="text-xs font-normal text-slate-400">(ฟรี)</span></th>
+                                                    <th className="px-4 py-4 font-medium text-center bg-emerald-50/30">คงเหลือ<br/><span className="text-xs font-normal text-slate-400">(ฟรี)</span></th>
+                                                    <th className="px-4 py-4 font-medium text-center border-l border-slate-200">สถานะรวม</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {inventory.map((item) => {
+                                                    const isExpiring = expiringSoon.find(e => e.dbId === item.dbId);
+                                                    const totalCurrent = item.currentClaim + item.currentFree;
+                                                    return (
+                                                        <tr key={item.dbId} className="hover:bg-slate-50 transition-colors">
+                                                            <td className="px-4 py-4 font-bold text-slate-800">{item.batchId}</td>
+                                                            <td className="px-4 py-4">{item.productionDate}</td>
+                                                            <td className={`px-4 py-4 ${isExpiring ? 'text-rose-600 font-bold bg-rose-50' : ''}`}>
+                                                                {item.expiryDate} {isExpiring && <i className="fa-solid fa-triangle-exclamation text-xs ml-1"></i>}
+                                                            </td>
+                                                            <td className="px-4 py-4 text-center border-l border-slate-100 text-slate-500">{item.initialClaim}</td>
+                                                            <td className="px-4 py-4 text-center">
+                                                                <span className={`px-3 py-1 rounded font-bold ${item.currentClaim > 0 ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-400'}`}>{item.currentClaim}</span>
+                                                            </td>
+                                                            <td className="px-4 py-4 text-center border-l border-slate-100 text-slate-500">{item.initialFree}</td>
+                                                            <td className="px-4 py-4 text-center">
+                                                                <span className={`px-3 py-1 rounded font-bold ${item.currentFree > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'}`}>{item.currentFree}</span>
+                                                            </td>
+                                                            <td className="px-4 py-4 text-center border-l border-slate-100">
+                                                                {totalCurrent === 0 ? <span className="text-slate-400 text-xs font-bold uppercase tracking-wider">หมดแล้ว</span> : <span className="text-emerald-600 text-xs font-bold uppercase tracking-wider">พร้อมใช้</span>}
+                                                            </td>
+                                                        </tr>
+                                                    )
+                                                })}
+                                                {inventory.length === 0 && (<tr><td colSpan="8" className="px-6 py-8 text-center text-slate-500">ยังไม่มีข้อมูลในคลังยา</td></tr>)}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB: INBOUND (เพิ่มยา) */}
+                        {activeTab === 'inbound' && (
+                            <div className="max-w-3xl mx-auto">
+                                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                    <div className="p-6 border-b border-slate-200 bg-slate-50 text-slate-800"><h2 className="text-xl font-bold flex items-center gap-2"><i className="fa-solid fa-circle-plus"></i> บันทึกจำนวนยาที่ได้จากการผลิต</h2></div>
+                                    <form onSubmit={handleAddStock} className="p-6 space-y-6">
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 pb-6 border-b border-slate-100">
+                                            <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">รหัสรอบการผลิต (Batch ID) *</label><input type="text" required placeholder="เช่น B-260701" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg outline-none" value={inboundForm.batchId} onChange={(e) => setInboundForm({...inboundForm, batchId: e.target.value})} /></div>
+                                            <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">วันที่ผลิต *</label><input type="date" required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg outline-none" value={inboundForm.productionDate} onChange={(e) => setInboundForm({...inboundForm, productionDate: e.target.value})} /></div>
+                                            <div className="space-y-2"><label className="text-sm font-semibold text-slate-700">วันหมดอายุ (EXP) *</label><input type="date" required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg outline-none" value={inboundForm.expiryDate} onChange={(e) => setInboundForm({...inboundForm, expiryDate: e.target.value})} /></div>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                                            <div className="space-y-2 p-5 rounded-xl border border-sky-100 bg-sky-50/30">
+                                                <label className="text-sm font-semibold text-sky-800 flex items-center gap-2"><i className="fa-solid fa-box text-base"></i> สิทธิ์เบิกคลัง</label>
+                                                <input type="number" min="0" placeholder="0" className="w-full p-3 bg-white border border-sky-200 rounded-lg outline-none" value={inboundForm.qtyClaim} onChange={(e) => setInboundForm({...inboundForm, qtyClaim: e.target.value})} />
+                                            </div>
+                                            <div className="space-y-2 p-5 rounded-xl border border-emerald-100 bg-emerald-50/30">
+                                                <label className="text-sm font-semibold text-emerald-800 flex items-center gap-2"><i className="fa-solid fa-gift text-base"></i> ยาฟรี</label>
+                                                <input type="number" min="0" placeholder="0" className="w-full p-3 bg-white border border-emerald-200 rounded-lg outline-none" value={inboundForm.qtyFree} onChange={(e) => setInboundForm({...inboundForm, qtyFree: e.target.value})} />
+                                            </div>
+                                        </div>
+                                        <button type="submit" className="w-full bg-slate-800 hover:bg-slate-700 text-white font-medium py-3 px-4 rounded-lg transition-all shadow-md hover:shadow-lg">บันทึกข้อมูลเข้าคลัง</button>
+                                    </form>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB: OUTBOUND (เบิกยา) */}
+                        {activeTab === 'outbound' && (
+                            <div className="max-w-2xl mx-auto">
+                                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                    <div className="p-6 border-b border-slate-200 bg-slate-50"><h2 className="text-xl font-bold flex items-center gap-2 text-slate-800"><i className="fa-solid fa-circle-minus"></i> บันทึกตัดจ่ายยา</h2></div>
+                                    <form onSubmit={handleDispense} className="p-6 space-y-6">
+                                        <div className="space-y-3">
+                                            <label className="text-sm font-semibold text-slate-800">1. เลือกประเภทยาที่ต้องการเบิก *</label>
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <label className={`cursor-pointer border rounded-xl p-5 flex flex-col items-center gap-3 transition-all ${outboundForm.type === 'claim' ? 'border-sky-400 bg-sky-50 shadow-md transform scale-[1.02]' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
+                                                    <input type="radio" name="dispenseType" value="claim" className="sr-only" checked={outboundForm.type === 'claim'} onChange={(e) => setOutboundForm({...outboundForm, type: e.target.value, batchId: ''})} />
+                                                    <i className={`fa-solid fa-box text-3xl ${outboundForm.type === 'claim' ? 'text-sky-600' : 'text-slate-400'}`}></i>
+                                                    <span className={`font-semibold ${outboundForm.type === 'claim' ? 'text-sky-700' : 'text-slate-600'}`}>สิทธิ์เบิกคลัง</span>
+                                                </label>
+                                                <label className={`cursor-pointer border rounded-xl p-5 flex flex-col items-center gap-3 transition-all ${outboundForm.type === 'free' ? 'border-emerald-400 bg-emerald-50 shadow-md transform scale-[1.02]' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
+                                                    <input type="radio" name="dispenseType" value="free" className="sr-only" checked={outboundForm.type === 'free'} onChange={(e) => setOutboundForm({...outboundForm, type: e.target.value, batchId: ''})} />
+                                                    <i className={`fa-solid fa-gift text-3xl ${outboundForm.type === 'free' ? 'text-emerald-600' : 'text-slate-400'}`}></i>
+                                                    <span className={`font-semibold ${outboundForm.type === 'free' ? 'text-emerald-700' : 'text-slate-600'}`}>ยาฟรี</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-semibold text-slate-800">2. วันที่ตัดจ่าย *</label>
+                                            <input type="date" required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg outline-none" value={outboundForm.date} onChange={(e) => setOutboundForm({...outboundForm, date: e.target.value})} />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-semibold text-slate-800">3. เลือกรอบการผลิต *</label>
+                                            <select required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg outline-none" value={outboundForm.batchId} onChange={(e) => setOutboundForm({...outboundForm, batchId: e.target.value})}>
+                                                <option value="">-- เลือกรอบการผลิต --</option>
+                                                {inventory.filter(i => outboundForm.type === 'claim' ? i.currentClaim > 0 : i.currentFree > 0).map(item => {
+                                                    const qty = outboundForm.type === 'claim' ? item.currentClaim : item.currentFree;
+                                                    return (<option key={item.dbId} value={item.batchId}>Batch: {item.batchId} (เหลือ: {qty} Syringe | EXP: {item.expiryDate})</option>)
+                                                })}
+                                            </select>
+                                        </div>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                            <div className="space-y-2"><label className="text-sm font-semibold text-slate-800">4. จำนวน (Syringe) *</label><input type="number" min="1" required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg outline-none" value={outboundForm.qty} onChange={(e) => setOutboundForm({...outboundForm, qty: e.target.value})} /></div>
+                                            <div className="space-y-2"><label className="text-sm font-semibold text-slate-800">5. หมายเหตุ</label><input type="text" placeholder="ระบุผู้เบิก / สัปดาห์" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg outline-none" value={outboundForm.note} onChange={(e) => setOutboundForm({...outboundForm, note: e.target.value})} /></div>
+                                        </div>
+                                        <div className="pt-2">
+                                            <button type="submit" className="w-full bg-slate-800 hover:bg-slate-700 text-white font-medium py-4 px-4 rounded-xl flex justify-center items-center gap-2 transition-all shadow-md"><i className="fa-regular fa-circle-check text-xl"></i> ยืนยันการตัดจ่าย</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB: HISTORY (ประวัติ) */}
+                        {activeTab === 'history' && (
+                            <div className="space-y-6">
+                                <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2"><i className="fa-solid fa-clipboard-list"></i> ประวัติการตัดจ่ายยา</h2>
+                                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left text-sm text-slate-600">
+                                            <thead className="bg-slate-50 text-slate-600 uppercase border-b border-slate-200">
+                                                <tr><th className="px-6 py-4 font-medium">วันที่เบิก</th><th className="px-6 py-4 font-medium">Batch ID</th><th className="px-6 py-4 font-medium">สิทธิ์ / ประเภท</th><th className="px-6 py-4 font-medium text-center">จำนวนที่หัก</th><th className="px-6 py-4 font-medium">หมายเหตุ</th></tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {transactions.map((tx) => (
+                                                    <tr key={tx.dbId} className="hover:bg-slate-50 transition-colors">
+                                                        <td className="px-6 py-4">{tx.date}</td>
+                                                        <td className="px-6 py-4 font-bold text-slate-800">{tx.batchId}</td>
+                                                        <td className="px-6 py-4"><span className={`px-3 py-1.5 rounded-md text-xs font-semibold ${tx.type === 'claim' ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'}`}>{tx.type === 'claim' ? 'สิทธิ์เบิกคลัง' : 'ยาฟรี'}</span></td>
+                                                        <td className="px-6 py-4 text-center font-bold text-rose-600">-{tx.qty}</td>
+                                                        <td className="px-6 py-4 text-slate-500">{tx.note || '-'}</td>
+                                                    </tr>
+                                                ))}
+                                                {transactions.length === 0 && (<tr><td colSpan="5" className="px-6 py-8 text-center text-slate-500">ยังไม่มีประวัติการตัดจ่าย</td></tr>)}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<EyleaAppRealtime />);
+    </script>
+</body>
+</html>
